@@ -1,4 +1,6 @@
 streamlit
+pypdf
+chromadb
 sentence-transformers
-qdrant-client
-pandas
+ollama
+requests
