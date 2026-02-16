@@ -1,1 +1,6 @@
-
+streamlit
+sentence-transformers
+qdrant-client
+langchain-ollama
+ollama
+pandas
