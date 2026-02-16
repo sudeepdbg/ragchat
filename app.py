@@ -13,12 +13,27 @@ EMBED_MODEL_NAME = 'all-MiniLM-L6-v2'
 LLM_MODEL = "llama3.2"                 # or "phi3:mini", "mistral", etc.
 CHROMA_PATH = "./chroma_db"
 COLLECTION_NAME = "my_docs_collection"
+CHUNK_SIZE = 500                        # words per chunk
+CHUNK_OVERLAP = 50                       # overlap between chunks
+TOP_K_RETRIEVAL = 5                      # number of chunks to retrieve
+
+# ---------- Helper: split text into overlapping chunks ----------
+def split_text(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
+    """Split text into overlapping chunks of approximately `chunk_size` words."""
+    words = text.split()
+    chunks = []
+    step = chunk_size - overlap
+    for i in range(0, len(words), step):
+        chunk = " ".join(words[i:i+chunk_size])
+        # Only keep chunks with meaningful content (adjust threshold as needed)
+        if len(chunk) > 100:
+            chunks.append(chunk)
+    return chunks
 
 # ---------- Check Ollama availability ----------
 def is_ollama_available():
     """Check if Ollama server is running."""
     try:
-        # Try to list models – quick check
         ollama.list()
         return True
     except (requests.exceptions.ConnectionError, Exception):
@@ -53,9 +68,9 @@ def process_uploaded_file(uploaded_file):
         reader = pypdf.PdfReader(tmp_path)
         full_text = ""
         for page in reader.pages:
-            full_text += page.extract_text()
+            full_text += page.extract_text() + "\n"
 
-        chunks = [c.strip() for c in full_text.split('\n\n') if len(c.strip()) > 100]
+        chunks = split_text(full_text)  # use the improved chunker
         if not chunks:
             st.warning(f"No text chunks extracted from {uploaded_file.name}")
             return 0
@@ -81,7 +96,7 @@ def process_uploaded_file(uploaded_file):
         os.unlink(tmp_path)
 
 # ---------- Ask a question ----------
-def ask_question(question, top_k=3):
+def ask_question(question, top_k=TOP_K_RETRIEVAL):
     q_emb = embedder.encode([question]).tolist()
     results = collection.query(
         query_embeddings=q_emb,
@@ -92,11 +107,12 @@ def ask_question(question, top_k=3):
     if not results['documents'][0]:
         return "I couldn't find any relevant information.", []
 
-    context = "\n\n---\n\n".join(results['documents'][0])
+    retrieved_docs = results['documents'][0]
     sources = list(set([m['source'] for m in results['metadatas'][0]]))
 
-    # Try to use Ollama if available
+    # If Ollama is available, generate an answer using all retrieved chunks
     if st.session_state.ollama_available:
+        context = "\n\n---\n\n".join(retrieved_docs)
         prompt = f"""You are a helpful assistant. Answer the question based *only* on the context below.
 If the answer is not found in the context, say "I cannot find the answer in the provided documents."
 
@@ -110,12 +126,20 @@ Answer:"""
             response = ollama.generate(model=LLM_MODEL, prompt=prompt)
             return response['response'], sources
         except Exception as e:
-            # If Ollama fails during generation, fall back to context
+            # Fallback to showing retrieved chunks if generation fails
             st.warning("⚠️ Ollama encountered an error. Showing retrieved context instead.")
-            return f"**Retrieved context (LLM offline):**\n\n{context}", sources
+            answer = "**Relevant excerpts from your documents:**\n\n"
+            for i, doc in enumerate(retrieved_docs[:3]):  # show top 3
+                answer += f"--- Excerpt {i+1} ---\n{doc}\n\n"
+            return answer, sources
     else:
-        # Ollama not available – just show the context
-        return f"**Retrieved context (LLM offline – install Ollama locally for AI answers):**\n\n{context}", sources
+        # Ollama not available – show top retrieved chunks
+        answer = "**Relevant excerpts from your documents (Ollama offline):**\n\n"
+        for i, doc in enumerate(retrieved_docs[:3]):
+            answer += f"--- Excerpt {i+1} ---\n{doc}\n\n"
+        if len(retrieved_docs) > 3:
+            answer += f"\n*(showing 3 of {len(retrieved_docs)} relevant excerpts)*"
+        return answer, sources
 
 # ---------- Streamlit UI ----------
 st.set_page_config(page_title="Local RAG Chatbot", layout="wide")
@@ -148,7 +172,7 @@ with st.sidebar:
                         st.error(f"Failed to process {file.name}")
 
     st.divider()
-    status = "✅ Online" if st.session_state.ollama_available else "❌ Offline (using fallback mode)"
+    status = "✅ Online (Ollama ready)" if st.session_state.ollama_available else "❌ Offline (showing raw excerpts)"
     st.caption(f"**Ollama status:** {status}")
     st.caption(f"Using model: **{LLM_MODEL}**")
 
@@ -168,7 +192,7 @@ if prompt := st.chat_input("Ask a question about your documents..."):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
+        with st.spinner("Searching..."):
             answer, sources = ask_question(prompt)
             st.markdown(answer)
             if sources:
