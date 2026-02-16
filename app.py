@@ -32,11 +32,19 @@ def split_text(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
 
 # ---------- Check Ollama availability ----------
 def is_ollama_available():
-    """Check if Ollama server is running."""
+    """Check if Ollama server is running using both library and direct HTTP."""
+    # Method 1: try the library
     try:
         ollama.list()
         return True
-    except (requests.exceptions.ConnectionError, Exception):
+    except:
+        pass
+    # Method 2: direct HTTP request
+    try:
+        import requests
+        response = requests.get("http://localhost:11434/api/tags", timeout=2)
+        return response.status_code == 200
+    except:
         return False
 
 # ---------- Initialize Embedder ----------
